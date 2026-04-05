@@ -1,0 +1,69 @@
+{
+  "version": 1,
+  "author": "Portable DSO Project",
+  "editor": "wokwi",
+  "parts": [
+    {
+      "type": "wokwi-pi-pico",
+      "id": "pico",
+      "top": 80,
+      "left": 0,
+      "attrs": {}
+    },
+    {
+      "type": "wokwi-ssd1306",
+      "id": "oled",
+      "top": -60,
+      "left": 220,
+      "attrs": {
+        "i2cAddress": "0x3c"
+      }
+    },
+    {
+      "type": "wokwi-pushbutton",
+      "id": "btn_tb_up",
+      "top": 80,
+      "left": 420,
+      "attrs": { "color": "green", "label": "TB+" }
+    },
+    {
+      "type": "wokwi-pushbutton",
+      "id": "btn_tb_dn",
+      "top": 160,
+      "left": 420,
+      "attrs": { "color": "green", "label": "TB-" }
+    },
+    {
+      "type": "wokwi-pushbutton",
+      "id": "btn_trig",
+      "top": 240,
+      "left": 420,
+      "attrs": { "color": "yellow", "label": "TRIG" }
+    },
+    {
+      "type": "wokwi-pushbutton",
+      "id": "btn_edge",
+      "top": 320,
+      "left": 420,
+      "attrs": { "color": "red", "label": "EDGE" }
+    }
+  ],
+  "connections": [
+    ["pico:GP4",  "oled:SDA", "green", []],
+    ["pico:GP5",  "oled:SCL", "blue",  []],
+    ["pico:3V3",  "oled:VCC", "red",   []],
+    ["pico:GND.1","oled:GND", "black", []],
+
+    ["pico:GP15",      "btn_tb_up:1.l", "yellow", []],
+    ["btn_tb_up:2.l",  "pico:GND.1",   "black",  []],
+
+    ["pico:GP14",      "btn_tb_dn:1.l", "yellow", []],
+    ["btn_tb_dn:2.l",  "pico:GND.1",   "black",  []],
+
+    ["pico:GP13",      "btn_trig:1.l", "yellow", []],
+    ["btn_trig:2.l",   "pico:GND.1",  "black",  []],
+
+    ["pico:GP12",      "btn_edge:1.l", "yellow", []],
+    ["btn_edge:2.l",   "pico:GND.1",  "black",  []]
+  ]
+}
