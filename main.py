@@ -37,6 +37,8 @@ import ssd1306
 SIMULATION_MODE = True   # True  = replay samples.py array
                           # False = read live ADC on GP26
 
+RUN_MODE = True   # True = running, False = stopped
+
 VREF          = 3.3      # ADC reference voltage  (V)
 ADC_BITS      = 16       # read_u16() returns 0–65535
 ADC_MAX       = (1 << ADC_BITS) - 1   # 65535
@@ -67,6 +69,7 @@ trig_rising = True               # True = rising edge, False = falling
 
 TRIG_TIMEOUT_ITERS = 100_000     # give up hunting trigger after N ADC reads
 
+effective_step = 1.0
 # ══════════════════════════════════════════════════════════════════════════════
 #  ADC LAYER  –  real hardware  or  CSV simulation
 # ══════════════════════════════════════════════════════════════════════════════
@@ -127,30 +130,64 @@ BTN_TB_UP   = Pin(15, Pin.IN, Pin.PULL_UP)  # timebase slower  (longer window)
 BTN_TB_DN   = Pin(14, Pin.IN, Pin.PULL_UP)  # timebase faster  (shorter window)
 BTN_TRIG_UP = Pin(13, Pin.IN, Pin.PULL_UP)  # trigger level up
 BTN_EDGE    = Pin(12, Pin.IN, Pin.PULL_UP)  # toggle edge polarity
+BTN_RUN_STOP = Pin(11, Pin.IN, Pin.PULL_UP)  # NEW: run/stop toggle
+BTN_AUTO = Pin(10, Pin.IN, Pin.PULL_UP)
 
 # Store last button states for edge detection (no debounce timer needed in sim)
-_btn_prev = [True, True, True, True]
+# _btn_prev = [True, True, True, True]
+_btn_prev = [True, True, True, True, True, True]
+
+# def poll_buttons():
+#     """
+#     Returns a tuple of booleans (tb_up, tb_dn, trig_up, edge)
+#     – each True for exactly the one frame the button was pressed.
+#     """
+#     global _btn_prev, tb_idx, trig_idx, trig_rising
+#     curr = [BTN_TB_UP.value(), BTN_TB_DN.value(),
+#             BTN_TRIG_UP.value(), BTN_EDGE.value()]
+
+#     pressed = [not curr[i] and _btn_prev[i] for i in range(4)]
+#     _btn_prev = curr
+
+#     if pressed[0]:   # TB slower
+#         tb_idx = min(tb_idx + 1, len(TIMEBASES_US) - 1)
+#     if pressed[1]:   # TB faster
+#         tb_idx = max(tb_idx - 1, 0)
+#     if pressed[2]:   # trigger level up
+#         trig_idx = (trig_idx + 1) % (TRIG_STEPS + 1)
+#     if pressed[3]:   # edge toggle
+#         trig_rising = not trig_rising
+
+#     return pressed
 
 def poll_buttons():
-    """
-    Returns a tuple of booleans (tb_up, tb_dn, trig_up, edge)
-    – each True for exactly the one frame the button was pressed.
-    """
-    global _btn_prev, tb_idx, trig_idx, trig_rising
-    curr = [BTN_TB_UP.value(), BTN_TB_DN.value(),
-            BTN_TRIG_UP.value(), BTN_EDGE.value()]
+    global _btn_prev, tb_idx, trig_idx, trig_rising, RUN_MODE
 
-    pressed = [not curr[i] and _btn_prev[i] for i in range(4)]
+    curr = [
+        BTN_TB_UP.value(),
+        BTN_TB_DN.value(),
+        BTN_TRIG_UP.value(),
+        BTN_EDGE.value(),
+        BTN_RUN_STOP.value(),
+        BTN_AUTO.value()
+    ]
+
+    # ✅ correct length = 6
+    pressed = [not curr[i] and _btn_prev[i] for i in range(6)]
     _btn_prev = curr
 
-    if pressed[0]:   # TB slower
+    if pressed[0]:
         tb_idx = min(tb_idx + 1, len(TIMEBASES_US) - 1)
-    if pressed[1]:   # TB faster
+    if pressed[1]:
         tb_idx = max(tb_idx - 1, 0)
-    if pressed[2]:   # trigger level up
+    if pressed[2]:
         trig_idx = (trig_idx + 1) % (TRIG_STEPS + 1)
-    if pressed[3]:   # edge toggle
+    if pressed[3]:
         trig_rising = not trig_rising
+    if pressed[4]:
+        RUN_MODE = not RUN_MODE
+    if pressed[5]:
+        auto_setup()
 
     return pressed
 
@@ -159,6 +196,8 @@ def poll_buttons():
 # ══════════════════════════════════════════════════════════════════════════════
 
 capture_buf = [0] * N_SAMPLES    # circular waveform buffer
+last_vpp = 0.0
+last_freq = 0.0
 
 def trig_level_adc():
     """Current trigger threshold as a 16-bit ADC value."""
@@ -181,37 +220,106 @@ def compute_inter_sample_delay_us():
 
     # In simulation mode ignore delay (array is already correctly sampled)
     if SIMULATION_MODE:
-        return 0
+    # simulate timebase effect by skipping samples
+        window_us = TIMEBASES_US[tb_idx] * WAVE_DIVS_X
+        sample_rate = adc_sample_rate()
+        samples_per_window = sample_rate * (window_us / 1_000_000)
+
+        step = samples_per_window / N_SAMPLES   # float (IMPORTANT)
+        return step   # 👈 return "step" instead of delay
 
     return int(delay_us)
 
-
 def capture_waveform():
     """
-    Hunt for trigger edge, then fill capture_buf with N_SAMPLES.
-    Returns True if trigger was found within TRIG_TIMEOUT_ITERS reads.
+    Trigger + capture with proper timebase behavior
     """
-    level     = trig_level_adc()
-    delay_us  = compute_inter_sample_delay_us()
+
+    level = trig_level_adc()
     triggered = False
 
-    # ── Trigger hunt ─────────────────────────────────────────────────────────
+    # ── Determine sampling behavior ──────────────────────
+    if SIMULATION_MODE:
+        window_us = TIMEBASES_US[tb_idx] * WAVE_DIVS_X
+        base_sample_rate = adc_sample_rate()
+
+        samples_per_window = base_sample_rate * (window_us / 1_000_000)
+
+        # 🔥 FLOAT step (fix dead zone)
+        step = samples_per_window / N_SAMPLES
+
+        delay_us = 0
+
+    else:
+        step = 1.0
+        delay_us = compute_inter_sample_delay_us()
+
+    # ── Trigger hunt ─────────────────────────────────────
     prev = read_adc()
+
     for _ in range(TRIG_TIMEOUT_ITERS):
         curr = read_adc()
-        if trig_rising  and prev < level <= curr:
-            triggered = True; break
+
+        poll_buttons()
+
+        if trig_rising and prev < level <= curr:
+            triggered = True
+            break
+
         if not trig_rising and prev > level >= curr:
-            triggered = True; break
+            triggered = True
+            break
+
         prev = curr
 
-    # ── Sample acquisition ───────────────────────────────────────────────────
+    # ── Sample acquisition ───────────────────────────────
+    acc = 0.0   # 🔥 fractional accumulator
+
     for i in range(N_SAMPLES):
+
         capture_buf[i] = read_adc()
-        if delay_us:
+
+        if SIMULATION_MODE:
+            acc += step
+            skip = int(acc)
+
+            for _ in range(skip):
+                read_adc()
+
+            acc -= skip
+
+        poll_buttons()
+
+        if not SIMULATION_MODE and delay_us:
             utime.sleep_us(delay_us)
 
+    # 🔥 Store effective step globally for frequency calc
+    global effective_step
+    effective_step = step
+    # Calculate exactly how many seconds pass between each point in capture_buf
+    global seconds_per_sample
+    if SIMULATION_MODE:
+        # In sim, we skip 'step' samples of the original CSV rate
+        seconds_per_sample = step / adc_sample_rate()
+    else:
+        # In live mode, it's (delay + overhead)
+        seconds_per_sample = (delay_us + 2.0) / 1_000_000
+
     return triggered
+
+def measure_signal():
+    """
+    Calculates frequency based on the UI Timebase (the 'Master Clock').
+    """
+    if len(capture_buf) < 10: 
+        return 0.0, 0.0
+
+    # 1. Voltage Peak-to-Peak (stays the same)
+    v_max = max(capture_buf)
+    v_min = min(capture_buf)
+    vpp = ((v_max - v_min) / ADC_MAX) * VREF
+
+    return vpp
 
 # ══════════════════════════════════════════════════════════════════════════════
 #  DISPLAY RENDERING
@@ -280,8 +388,15 @@ def draw_labels(triggered):
 
     # Status bar (bottom row)
     status = "TRG " if triggered else "--- "
-    mode   = "SIM" if SIMULATION_MODE else "ADC"
-    display.text(status + mode, 0, SCREEN_H - 8, 1)
+    # mode   = "SIM" if SIMULATION_MODE else "ADC"
+    run    = "RUN" if RUN_MODE else "STP"
+    # display.text(status + mode, 0, SCREEN_H - 8, 1)
+    display.text(status + run, 0, SCREEN_H - 8, 1)
+
+    # Vpp
+    vpp_str = f"{last_vpp:.2f}V"
+    display.text(vpp_str[:6], 0, 40, 1)
+    
 
 
 def render_frame(triggered):
@@ -310,10 +425,22 @@ def main():
     display.show()
     utime.sleep_ms(1000)
 
+    # while True:
+    #     poll_buttons()
+    #     triggered = capture_waveform()
+    #     render_frame(triggered)
+    global last_vpp, last_freq 
+    
+    last_triggered = False
+
     while True:
         poll_buttons()
-        triggered = capture_waveform()
-        render_frame(triggered)
+
+        if RUN_MODE:
+            last_triggered = capture_waveform()
+            last_vpp = measure_signal()
+
+        render_frame(last_triggered)
 
 
 main()

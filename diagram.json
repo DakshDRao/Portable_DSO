@@ -46,6 +46,13 @@
       "top": 320,
       "left": 420,
       "attrs": { "color": "red", "label": "EDGE" }
+    },
+    {
+      "type": "wokwi-pushbutton",
+      "id": "btn_run_stop",
+      "top": 400,
+      "left": 420,
+      "attrs": { "color": "blue", "label": "RUN/STP" }
     }
   ],
   "connections": [
@@ -64,6 +71,9 @@
     ["btn_trig:2.l",   "pico:GND.1",  "black",  []],
 
     ["pico:GP12",      "btn_edge:1.l", "yellow", []],
-    ["btn_edge:2.l",   "pico:GND.1",  "black",  []]
+    ["btn_edge:2.l",   "pico:GND.1",  "black",  []],
+
+    ["pico:GP11",          "btn_run_stop:1.l", "yellow", []],
+    ["btn_run_stop:2.l",   "pico:GND.1",      "black",  []]
   ]
 }
